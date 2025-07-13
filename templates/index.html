@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Music Translator</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            color: #1c1e21;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #fff;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 1.5rem;
+            color: #1877f2;
+            margin-bottom: 0.5rem;
+        }
+        p {
+            font-size: 1rem;
+            color: #606770;
+        }
+        .status {
+            margin: 1rem 0;
+            font-weight: bold;
+        }
+        .translation-box {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border: 1px solid #dddfe2;
+            border-radius: 6px;
+            background-color: #f7f7f7;
+            min-height: 100px;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .original-text {
+            font-style: italic;
+            color: #606770;
+        }
+        .translated-text {
+            font-weight: bold;
+            color: #1c1e21;
+        }
+        .controls {
+            margin-top: 1rem;
+        }
+        button {
+            background-color: #1877f2;
+            color: #fff;
+            border: none;
+            padding: 0.8rem 1.5rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin: 0.5rem;
+        }
+        button:disabled {
+            background-color: #a0bdf5;
+            cursor: not-allowed;
+        }
+        #transcript-history {
+            width: 100%;
+            height: 150px;
+            margin-top: 1rem;
+            border: 1px solid #dddfe2;
+            border-radius: 6px;
+            padding: 0.5rem;
+            background-color: #f7f7f7;
+            overflow-y: auto;
+            text-align: left;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Live Music Translator</h1>
+        <p>
+            Translate live audio from 
+            <select id="lang-selector" aria-label="Source Language"></select>
+             to English in real-time.
+        </p>
+        <div class="status" id="status">Press "Start Listening" to begin.</div>
+        <div class="translation-box">
+            <div class="original-text" id="original-text"></div>
+            <div class="translated-text" id="translated-text"></div>
+        </div>
+        <div id="transcript-history"></div>
+        <div class="controls">
+            <button id="start-btn">Start Listening</button>
+            <button id="stop-btn" disabled>Stop Listening</button>
+            <button id="download-btn" disabled>Download Transcript</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const statusDiv = document.getElementById('status');
+        const originalTextDiv = document.getElementById('original-text');
+        const translatedTextDiv = document.getElementById('translated-text');
+        const langSelector = document.getElementById('lang-selector');
+        const transcriptHistoryDiv = document.getElementById('transcript-history');
+
+        let transcriptHistory = [];
+        let currentOriginal = '';
+
+        langSelector.addEventListener('change', () => {
+            const selectedLang = langSelector.value;
+            socket.emit('set_language', selectedLang);
+        });
+
+        startBtn.addEventListener('click', () => {
+            socket.emit('start_translation');
+            statusDiv.textContent = 'Listening...';
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            langSelector.disabled = true;
+            downloadBtn.disabled = true;
+            transcriptHistory = [];
+            transcriptHistoryDiv.innerHTML = '';
+            originalTextDiv.textContent = '';
+            translatedTextDiv.textContent = '';
+        });
+
+        stopBtn.addEventListener('click', () => {
+            socket.emit('stop_translation');
+            statusDiv.textContent = 'Stopped. Press "Start Listening" to begin.';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            langSelector.disabled = false;
+            if (transcriptHistory.length > 0) {
+                downloadBtn.disabled = false;
+            }
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            const transcriptText = transcriptHistory.join('\n');
+            const blob = new Blob([transcriptText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'translation-transcript.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            statusDiv.textContent = 'Disconnected. Please refresh.';
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            langSelector.disabled = true;
+            downloadBtn.disabled = true;
+        });
+
+        socket.on('translation_update', (data) => {
+            statusDiv.textContent = data.status || 'Listening...';
+            if (data.original) {
+                originalTextDiv.textContent = `Original (${data.lang}): ${data.original}`;
+                currentOriginal = `Original (${data.lang}): ${data.original}`;
+            }
+            if (data.translated) {
+                const translatedLine = `Translation (English): ${data.translated}`;
+                translatedTextDiv.textContent = translatedLine;
+                if (currentOriginal) {
+                    const entry = `${currentOriginal}\n${translatedLine}\n`;
+                    transcriptHistory.push(entry);
+                    transcriptHistoryDiv.innerHTML += entry + '<br>';
+                    transcriptHistoryDiv.scrollTop = transcriptHistoryDiv.scrollHeight;
+                    currentOriginal = '';
+                }
+            }
+        });
+
+        socket.on('available_languages', (data) => {
+            langSelector.innerHTML = '';
+            for (const [code, name] of Object.entries(data.languages)) {
+                const option = document.createElement('option');
+                option.value = code;
+                option.textContent = name;
+                if (code === data.default) {
+                    option.selected = true;
+                }
+                langSelector.appendChild(option);
+            }
+        });
+    </script>
+</body>
+</html>

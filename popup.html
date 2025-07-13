@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Translator</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <h1>Live Translator</h1>
+    <div id="controls">
+        <select id="language-select"></select>
+        <button id="start-btn">Start</button>
+        <button id="stop-btn" style="display:none;">Stop</button>
+    </div>
+    <div id="status-container">
+        <span id="status-indicator"></span>
+        <span id="status-text">Ready</span>
+    </div>
+    <div id="transcript-container">
+        <h3>Transcript</h3>
+        <div id="history"></div>
+    </div>
+    <button id="download-btn" style="display:none;">Download Transcript</button>
+    <script src="socket.io.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>
