@@ -4,7 +4,8 @@
   "version": "1.0",
   "description": "Translate audio from your microphone in real-time on any webpage.",
   "permissions": [
-    "storage"
+    "storage",
+    "audioCapture"
   ],
   "host_permissions": [
     "http://127.0.0.1:5000/*"
