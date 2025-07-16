@@ -27,8 +27,9 @@ import os
 from dotenv import load_dotenv
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
-import threading
 from flask_cors import CORS
+import wave
+import io
 
 # Load environment variables from .env file if present
 load_dotenv()
@@ -50,6 +51,14 @@ client_states = {}
 API_KEY = os.environ.get("GEMINI_API_KEY")  # Read Gemini API key from environment variable
 # I've set the default to Punjabi as requested. You can change this to any other code in the list.
 # SOURCE_LANGUAGE_CODE = "hi-IN" # Language to translate from (e.g., "hi-IN" for Hindi, "es-ES" for Spanish, "pa-IN" for Punjabi)
+
+# Check for Google Cloud credentials
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    print("\n[Warning] GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+    print("          The application will fall back to a less reliable speech recognition method.")
+    print("          For best results, please set up Google Cloud Speech-to-Text API credentials.")
+    print("          See: https://cloud.google.com/docs/authentication/provide-credentials-adc\n")
+
 
 # A simple mapping for display purposes.
 LANG_MAP = {
@@ -119,68 +128,79 @@ def translate_text(text, sid):
         return "An error occurred during translation."
 
 
-def listen_and_translate(sid):
+@socketio.on('process_audio')
+def handle_process_audio(data):
     """
-    Listens for audio, transcribes it, and sends translations to the client.
-    This function runs in a background thread for a specific client.
+    Receives a blob of audio data from a client, transcribes, and translates it.
     """
+    sid = request.sid
+    print(f"[{sid}] Received audio data.")
+
+    # The raw audio data is in data['audio']
+    # The client also sends metadata needed to interpret the audio
+    audio_bytes = data.get('audio')
+    sample_rate = data.get('sample_rate', 16000) # Default to 16kHz if not provided
+    # Sample width is 2 bytes for 16-bit audio, which is what we'll aim for from the client
+    sample_width = data.get('sample_width', 2)
+
+    if not audio_bytes:
+        print(f"[{sid}] No audio data received.")
+        socketio.emit('status_update', {'status': 'Error: No audio data received.'}, room=sid)
+        return
+
+    # Let the user know we are processing
+    socketio.emit('status_update', {'status': 'Processing...'}, room=sid)
+    print(f"[{sid}] Processing audio...")
+
+    # Create an AudioData object for the speech_recognition library
+    try:
+        audio_data = sr.AudioData(audio_bytes, sample_rate, sample_width)
+    except Exception as e:
+        print(f"[{sid}] Error creating AudioData object: {e}")
+        socketio.emit('status_update', {'status': f'Error processing audio format: {e}'}, room=sid)
+        return
+
     r = sr.Recognizer()
-    # How many seconds of non-speaking audio before a phrase is considered complete.
-    # This is the key to capturing complete sentences.
-    r.pause_threshold = 2.0 
-    # You can also adjust this if the recognizer is too sensitive to background noise
-    # r.energy_threshold = 4000 
-    mic = sr.Microphone()
-    
-    client_states[sid]['running'] = True
-    print(f"[{sid}] Starting translation thread.")
-    
-    with mic as source:
-        r.adjust_for_ambient_noise(source, duration=1) # Adjust for ambient noise once
-        
-    while client_states.get(sid, {}).get('running', False):
-        socketio.emit('status_update', {'status': 'Listening...'}, room=sid)
-        print(f"[{sid}] Listening for a sentence...")
-        try:
-            with mic as source:
-                # Listen for a full phrase, determined by the pause_threshold
-                audio = r.listen(source)
+    source_language = client_states.get(sid, {}).get('language', 'hi-IN')
+
+    # Recognize speech
+    try:
+        # Use Google Cloud Speech-to-Text if credentials are available
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            print(f"[{sid}] Using Google Cloud Speech-to-Text API with default model for {source_language}.")
+            original_text = r.recognize_google_cloud(
+                audio_data,
+                language_code=source_language,
+                enable_automatic_punctuation=True
+            )
+        else:
+            # Fallback to the less reliable web speech API
+            print(f"[{sid}] Using standard Web Speech API (less reliable).")
+            original_text = r.recognize_google(audio_data, language=source_language)
             
-            # Let the user know we are processing
-            socketio.emit('status_update', {'status': 'Processing...'}, room=sid)
-            print(f"[{sid}] Processing audio...")
+        print(f"[{sid}] Original: {original_text}")
 
-            source_language = client_states.get(sid, {}).get('language', 'hi-IN')
-            
-            # Recognize speech using Google Web Speech API
-            try:
-                original_text = r.recognize_google(audio, language=source_language)
-                print(f"[{sid}] Original: {original_text}")
+        # Translate the recognized text
+        translated_text = translate_text(original_text, sid)
+        print(f"[{sid}] Translated: {translated_text}")
 
-                # Translate the recognized text
-                translated_text = translate_text(original_text, sid)
-                print(f"[{sid}] Translated: {translated_text}")
+        # Send the final update to the specific client
+        socketio.emit('translation_update', {
+            'original': original_text,
+            'translated': translated_text
+        }, room=sid)
+        # After processing, signal that the server is ready for more.
+        socketio.emit('status_update', {'status': 'Ready for next input.'}, room=sid)
 
-                # Send the final update to the specific client
-                socketio.emit('translation_update', {
-                    'original': original_text,
-                    'translated': translated_text
-                }, room=sid)
-
-            except sr.UnknownValueError:
-                # This is the key change: if we can't understand the audio (e.g., it's just music),
-                # we don't treat it as an error. We just silently ignore it and continue listening.
-                print(f"[{sid}] Could not understand audio or it was just music. Continuing...")
-                continue # Go back to the start of the loop
-            except sr.RequestError as e:
-                print(f"[{sid}] Could not request results; {e}")
-                socketio.emit('status_update', {'status': f"API Error: {e}"}, room=sid)
-
-        except Exception as e:
-            print(f"An error occurred in the listening loop: {e}")
-            break
-            
-    print(f"[{sid}] Translation thread stopped.")
+    except sr.UnknownValueError:
+        print(f"[{sid}] Could not understand audio. It might be music or silence.")
+        socketio.emit('status_update', {'status': 'Could not understand audio. Please try again.'}, room=sid)
+    except sr.RequestError as e:
+        print(f"[{sid}] Could not request results from Google Speech Recognition service; {e}")
+        socketio.emit('status_update', {'status': f"API Error: {e}"}, room=sid)
+    except Exception as e:
+        print(f"[{sid}] An unexpected error occurred during recognition: {e}")
+        socketio.emit('status_update', {'status': f"An unexpected error occurred: {e}"}, room=sid)
 
 
 @socketio.on('connect')
@@ -189,9 +209,8 @@ def handle_connect():
     print(f"Client connected: {sid}")
     # Initialize state for the new client
     client_states[sid] = {
-        'running': False,
+        'running': False, # This can be repurposed to track recording state on client
         'language': 'hi-IN', # Default language
-        'thread': None,
         'history': [] # Add history for each client
     }
     emit('status_update', {'status': 'Connected and ready.'})
@@ -200,41 +219,12 @@ def handle_connect():
 def handle_disconnect():
     sid = request.sid
     print(f"Client disconnected: {sid}")
-    # Stop the translation thread if it's running
-    if client_states.get(sid, {}).get('running'):
-        client_states[sid]['running'] = False
-        if client_states[sid]['thread']:
-            client_states[sid]['thread'].join() # Wait for the thread to finish
     # Clean up the client state
     if sid in client_states:
         del client_states[sid]
 
-@socketio.on('start_translation')
-def handle_start_translation():
-    sid = request.sid
-    if not client_states.get(sid, {}).get('running'):
-        # Start the translation process in a background thread
-        client_states[sid]['history'] = [] # Clear history on start
-        thread = threading.Thread(target=listen_and_translate, args=(sid,))
-        client_states[sid]['thread'] = thread
-        thread.start()
-        emit('status_update', {'status': 'Translation started.'})
-    else:
-        emit('status_update', {'status': 'Translation is already running.'})
-
-
-@socketio.on('stop_translation')
-def handle_stop_translation():
-    sid = request.sid
-    if client_states.get(sid, {}).get('running'):
-        client_states[sid]['running'] = False
-        if client_states[sid]['thread']:
-            client_states[sid]['thread'].join() # Ensure the thread has stopped
-            client_states[sid]['thread'] = None
-        emit('status_update', {'status': 'Translation stopped. Ready.'})
-    else:
-        emit('status_update', {'status': 'Translation is not running.'})
-
+# Removed handle_start_translation, handle_stop_translation, and listen_and_translate
+# The client will now control the recording and send a complete audio chunk.
 
 @socketio.on('set_language')
 def handle_set_language(data):
@@ -245,8 +235,6 @@ def handle_set_language(data):
         print(f"[{sid}] Language set to: {language}")
         emit('status_update', {'status': f"Language set to {LANG_MAP.get(language, language)}"})
 
-# --- Main Execution ---
 if __name__ == '__main__':
-    print("Starting Flask server...")
-    # app.run(debug=True, use_reloader=False)
-    socketio.run(app, debug=True, use_reloader=False)
+    print("Starting Flask-SocketIO server...")
+    socketio.run(app, debug=True, port=5001)

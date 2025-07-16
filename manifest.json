@@ -1,29 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Live Translator",
+  "name": "Live Translation Extension",
   "version": "1.0",
-  "description": "Translate audio from your microphone in real-time on any webpage.",
+  "description": "Captures microphone audio, sends it to a local server for transcription and translation.",
   "permissions": [
-    "storage",
-    "audioCapture"
-  ],
-  "host_permissions": [
-    "http://127.0.0.1:5000/*"
+    "activeTab"
   ],
   "action": {
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "images/icon16.png",
-      "48": "images/icon48.png",
-      "128": "images/icon128.png"
-    }
+    "default_popup": "popup.html"
   },
-  "background": {
-    "service_worker": "background.js"
-  },
-  "icons": {
-    "16": "images/icon16.png",
-    "48": "images/icon48.png",
-    "128": "images/icon128.png"
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://127.0.0.1:5001 ws://127.0.0.1:5001;"
   }
 }
